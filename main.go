@@ -78,12 +78,31 @@ type Claims struct {
 	jwt.StandardClaims
 }
 
+// Custom CORS middleware for  control
+func CORSMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Set CORS headers
+		w.Header().Set("Access-Control-Allow-Origin", "*") // Allow all origins for development
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		w.Header().Set("Access-Control-Allow-Credentials", "true")
+
+		// Handle preflight OPTIONS request
+		if r.Method == "OPTIONS" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}
+
 // RateLimiterMiddleware adds rate limiting to handlers
 func RateLimiterMiddleware(rl *RateLimiter) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			clientIP := r.RemoteAddr
-			// For production, you might want to get the IP from X-Forwarded-For header
+			// For production,
 			// if behind a proxy: r.Header.Get("X-Forwarded-For")
 
 			if !rl.Allow(clientIP) {
@@ -103,6 +122,12 @@ func RegisterHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Basic validation
+	if user.Username == "" || user.Password == "" {
+		http.Error(w, "Username and password are required", http.StatusBadRequest)
+		return
+	}
+
 	// Check if user already exists
 	if _, exists := users[user.Username]; exists {
 		http.Error(w, "Username already exists", http.StatusConflict)
@@ -118,8 +143,12 @@ func RegisterHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Store user
 	users[user.Username] = string(hashedPassword)
+
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
-	fmt.Fprintf(w, "User %s registered successfully", user.Username)
+	json.NewEncoder(w).Encode(map[string]string{
+		"message": fmt.Sprintf("User %s registered successfully", user.Username),
+	})
 }
 
 // LoginHandler handles user login and issues a JWT
@@ -184,7 +213,12 @@ func ProtectedHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	fmt.Fprintf(w, "Welcome %s! This is a protected endpoint.", claims.Username)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"message":   fmt.Sprintf("Welcome %s! This is a protected endpoint.", claims.Username),
+		"username":  claims.Username,
+		"timestamp": time.Now().Unix(),
+	})
 }
 
 func main() {
@@ -193,17 +227,26 @@ func main() {
 
 	router := mux.NewRouter()
 
-	// Apply rate limiting middleware to all routes
+	// Apply middlewares in order
+	router.Use(CORSMiddleware)
 	router.Use(RateLimiterMiddleware(rateLimiter))
 
 	// Define endpoints
-	router.HandleFunc("/register", RegisterHandler).Methods("POST")
-	router.HandleFunc("/login", LoginHandler).Methods("POST")
-	router.HandleFunc("/protected", ProtectedHandler).Methods("GET")
+	router.HandleFunc("/register", RegisterHandler).Methods("POST", "OPTIONS")
+	router.HandleFunc("/login", LoginHandler).Methods("POST", "OPTIONS")
+	router.HandleFunc("/protected", ProtectedHandler).Methods("GET", "OPTIONS")
+
+	// Health check endpoint
+	router.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	}).Methods("GET")
 
 	// Start server
 	log.Println("Server starting on port 8080...")
+	log.Printf("CORS enabled for all origins (development mode)")
+
 	if err := http.ListenAndServe(":8080", router); err != nil {
-		log.Fatal(err)
+		log.Fatal("Server failed to start:", err)
 	}
 }
