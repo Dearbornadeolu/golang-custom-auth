@@ -66,14 +66,14 @@ type User struct {
 	Password string `json:"password"`
 }
 
-// In-memory user store (replace with a database in production)
+// In-memory user store
 var users = make(map[string]string) // username -> hashed password
 
-// JWT secret key (keep this secret in production)
-var jwtKey = []byte("my_secret_key")
+// JWT secret key
+var jwtKey = []byte("hjffddriofytrserzfgfhjfg")
 
-// Refresh token secret key (different from access token key for security)
-var refreshJwtKey = []byte("my_refresh_secret_key")
+// Refresh token secret key
+var refreshJwtKey = []byte("cgdsersrthjkhoiyiturytsfghgh")
 
 // Claims for access tokens
 type Claims struct {
