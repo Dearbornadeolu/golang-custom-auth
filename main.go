@@ -72,13 +72,22 @@ var users = make(map[string]string) // username -> hashed password
 // JWT secret key (keep this secret in production)
 var jwtKey = []byte("my_secret_key")
 
-// Claims for JWT
+// Refresh token secret key (different from access token key for security)
+var refreshJwtKey = []byte("my_refresh_secret_key")
+
+// Claims for access tokens
 type Claims struct {
 	Username string `json:"username"`
 	jwt.StandardClaims
 }
 
-// Custom CORS middleware for  control
+// Claims for refresh tokens
+type RefreshClaims struct {
+	Username string `json:"username"`
+	jwt.StandardClaims
+}
+
+// Custom CORS middleware for control
 func CORSMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Set CORS headers
@@ -151,7 +160,7 @@ func RegisterHandler(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// LoginHandler handles user login and issues a JWT
+// LoginHandler handles user login and issues both access and refresh tokens
 func LoginHandler(w http.ResponseWriter, r *http.Request) {
 	var user User
 	if err := json.NewDecoder(r.Body).Decode(&user); err != nil {
@@ -171,25 +180,96 @@ func LoginHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Create JWT
-	expirationTime := time.Now().Add(24 * time.Hour)
-	claims := &Claims{
+	// Create access token (short-lived)
+	accessTokenExpiration := time.Now().Add(15 * time.Minute) // 15 minutes
+	accessClaims := &Claims{
 		Username: user.Username,
 		StandardClaims: jwt.StandardClaims{
-			ExpiresAt: expirationTime.Unix(),
+			ExpiresAt: accessTokenExpiration.Unix(),
 		},
 	}
 
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	tokenString, err := token.SignedString(jwtKey)
+	accessToken := jwt.NewWithClaims(jwt.SigningMethodHS256, accessClaims)
+	accessTokenString, err := accessToken.SignedString(jwtKey)
 	if err != nil {
-		http.Error(w, "Failed to generate token", http.StatusInternalServerError)
+		http.Error(w, "Failed to generate access token", http.StatusInternalServerError)
 		return
 	}
 
-	// Return the token
+	// Create refresh token (long-lived)
+	refreshTokenExpiration := time.Now().Add(7 * 24 * time.Hour) // 7 days
+	refreshClaims := &RefreshClaims{
+		Username: user.Username,
+		StandardClaims: jwt.StandardClaims{
+			ExpiresAt: refreshTokenExpiration.Unix(),
+		},
+	}
+
+	refreshToken := jwt.NewWithClaims(jwt.SigningMethodHS256, refreshClaims)
+	refreshTokenString, err := refreshToken.SignedString(refreshJwtKey)
+	if err != nil {
+		http.Error(w, "Failed to generate refresh token", http.StatusInternalServerError)
+		return
+	}
+
+	// Return both tokens
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"token": tokenString})
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"access_token":  accessTokenString,
+		"refresh_token": refreshTokenString,
+		"token_type":    "Bearer",
+		"expires_in":    900, // 15 minutes in seconds
+	})
+}
+
+// RefreshTokenHandler handles refresh token requests
+func RefreshTokenHandler(w http.ResponseWriter, r *http.Request) {
+	var requestData struct {
+		RefreshToken string `json:"refresh_token"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&requestData); err != nil {
+		http.Error(w, "Invalid request payload", http.StatusBadRequest)
+		return
+	}
+
+	if requestData.RefreshToken == "" {
+		http.Error(w, "Missing refresh token", http.StatusUnauthorized)
+		return
+	}
+
+	refreshClaims := &RefreshClaims{}
+	token, err := jwt.ParseWithClaims(requestData.RefreshToken, refreshClaims, func(token *jwt.Token) (interface{}, error) {
+		return refreshJwtKey, nil
+	})
+
+	if err != nil || !token.Valid {
+		http.Error(w, "Invalid refresh token", http.StatusUnauthorized)
+		return
+	}
+
+	// Create a new access token
+	accessTokenExpiration := time.Now().Add(15 * time.Minute)
+	accessClaims := &Claims{
+		Username: refreshClaims.Username,
+		StandardClaims: jwt.StandardClaims{
+			ExpiresAt: accessTokenExpiration.Unix(),
+		},
+	}
+
+	newAccessToken := jwt.NewWithClaims(jwt.SigningMethodHS256, accessClaims)
+	newAccessTokenString, err := newAccessToken.SignedString(jwtKey)
+	if err != nil {
+		http.Error(w, "Failed to generate new access token", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"access_token": newAccessTokenString,
+		"token_type":   "Bearer",
+		"expires_in":   900, // 15 minutes in seconds
+	})
 }
 
 // ProtectedHandler is a sample protected endpoint
@@ -235,6 +315,7 @@ func main() {
 	router.HandleFunc("/register", RegisterHandler).Methods("POST", "OPTIONS")
 	router.HandleFunc("/login", LoginHandler).Methods("POST", "OPTIONS")
 	router.HandleFunc("/protected", ProtectedHandler).Methods("GET", "OPTIONS")
+	router.HandleFunc("/refresh-token", RefreshTokenHandler).Methods("POST", "OPTIONS")
 
 	// Health check endpoint
 	router.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
